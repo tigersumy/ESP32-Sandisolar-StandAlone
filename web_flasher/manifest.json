@@ -1,0 +1,16 @@
+{
+  "name": "SandiSolar 6.5 Pro — ESP32-S3-N16R8 Standalone Controller",
+  "version": "1.0.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "../bin/sandisolar_esp32s3_n16r8_factory.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

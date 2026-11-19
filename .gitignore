@@ -1,0 +1,15 @@
+.pio/
+.vscode/
+.DS_Store
+*.pyc
+__pycache__/
+
+# Private credentials and secrets
+include/secrets.h
+secrets.h
+*.key
+*.pem
+
+# Precompiled binaries containing private keys
+bin/*.bin
+web_flasher/bin/*.bin
