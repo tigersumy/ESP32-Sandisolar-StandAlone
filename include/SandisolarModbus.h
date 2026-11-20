@@ -526,7 +526,6 @@ done_tx_loop:
             }
         }
 
-        bool shouldAutoSwap = false;
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             if (anyCoreSuccess) {
                 m_telemetry.online = true;
@@ -539,19 +538,9 @@ done_tx_loop:
                 }
                 if (m_telemetry.rx_count == 0) {
                     m_noRxCycles++;
-                    if (m_noRxCycles >= 3) {
-                        m_noRxCycles = 0;
-                        shouldAutoSwap = true;
-                    }
                 }
             }
             xSemaphoreGive(m_dataMutex);
-        }
-
-        if (shouldAutoSwap && m_cfgPtr != nullptr) {
-            DebugLogger::warn("MODBUS", "⚠️ 0 відповідей за 3 цикли — авто-перевірка реверсу RX/TX (GPIO " +
-                              String(m_rxPin) + " <-> GPIO " + String(m_txPin) + ")...");
-            swapRxTxPins(true);
         }
 
         return anyCoreSuccess;
