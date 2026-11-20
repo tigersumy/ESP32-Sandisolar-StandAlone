@@ -14,6 +14,9 @@
 #include "TelegramBotManager.h"
 #include "OledDisplayManager.h"
 #include "DebugLogger.h"
+#include "RemoteConsoleManager.h"
+
+const char LITE_TTY_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html><html lang="uk"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SandiSolar S3 — Web TTY</title><style>body{background:#090d16;color:#10b981;font-family:monospace;margin:10px}input,button{background:#1e293b;color:#f8fafc;border:1px solid #334155;padding:6px 10px;border-radius:4px;font-family:monospace}pre{background:#000;color:#a7f3d0;padding:10px;border:1px solid #1e293b;border-radius:6px;height:62vh;overflow:auto;white-space:pre-wrap;font-size:12px}</style></head><body><div><b>⚡ SandiSolar ESP32-S3 Web TTY</b> | <a href="/" style="color:#38bdf8">Повний Дашборд</a> | Порти: TCP <code>2323</code> / UDP <code>4444</code></div><div style="margin:8px 0;display:flex;gap:6px;flex-wrap:wrap"><button onclick="run('status')">📊 Статус</button><button onclick="run('log 40')">📋 Лог</button><button onclick="run('swap')">🔄 Swap RX/TX (17↔18)</button><button onclick="run('trace on')">🟢 Trace ON</button><button onclick="run('trace off')">⚪ Trace OFF</button><button onclick="run('help')">❓ Help</button></div><form onsubmit="ev(event)" style="display:flex;gap:6px;margin-bottom:8px"><input id="c" style="flex:1" placeholder="Введіть команду (status, log, swap, mb 3 0 1, set rx_pin 18...)" autofocus><button type="submit">Виконати</button></form><pre id="o">Завантаження...</pre><form method="POST" action="/update" enctype="multipart/form-data" style="margin-top:8px">OTA (.bin): <input type="file" name="update" accept=".bin"><button type="submit">🚀 Прошити OTA</button></form><script>async function run(c){const o=document.getElementById('o');o.textContent+='\n> '+c+'\n';const r=await fetch('/api/cli?cmd='+encodeURIComponent(c));o.textContent+=await r.text();o.scrollTop=o.scrollHeight}function ev(e){e.preventDefault();const i=document.getElementById('c');if(i.value){run(i.value);i.value=''}}run('status');</script></body></html>)rawliteral";
 
 const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -573,12 +576,14 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
         </div>
 
         <div class="param-item">
-          <div class="param-head"><span>Режим трасування пакетів RS-485</span></div>
-          <div class="param-ctrl">
+          <div class="param-head"><span>Режим трасування пакетів RS-485 та тест пінів</span></div>
+          <div class="param-ctrl" style="flex-wrap:wrap;">
             <button class="btn btn-gray" onclick="sendCmd('trace_on')">🟢 Увімк. HEX Trace</button>
             <button class="btn btn-gray" onclick="sendCmd('trace_off')">⚪ Вимк. HEX Trace</button>
+            <button class="btn btn-amber" onclick="sendCmd('swap_pins')">🔄 Swap RX ↔ TX (17↔18)</button>
             <button class="btn btn-gray" onclick="copyDiagLog()">📋 Копіювати</button>
             <button class="btn btn-gray" onclick="sendCmd('clear_log')">🧹 Очистити</button>
+            <a href="/tty" target="_blank" class="btn btn-blue" style="text-decoration:none;">🖥️ Web TTY (/tty)</a>
           </div>
           <div id="sys-mem" style="font-size:0.76rem; color:var(--muted);">RAM / PSRAM: —</div>
         </div>
@@ -664,9 +669,12 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
             </label>
             <label style="font-size:0.74rem; color:var(--muted);">Ім'я вузла в мережі (Hostname):</label>
             <input type="text" id="cfg-ts-host">
-            <div style="font-size:0.73rem; color:var(--muted); margin-top:4px;">🔒 Ключ мережі захищено та вшито у прошивку (не відображається).</div>
-            <div style="margin-top:8px; display:flex; gap:8px;">
+            <label style="font-size:0.74rem; color:var(--muted);">Власний Auth Key (необов'язково, для заміни вшитого):</label>
+            <input type="password" id="cfg-ts-key" value="" placeholder="🔒 За замовчуванням: вшитий ключ (введіть свій tskey-auth-...)">
+            <div id="ts-key-badge" style="font-size:0.73rem; color:#34d399; margin-top:4px;">🔒 Ключ мережі захищено та вшито у прошивку (не відображається).</div>
+            <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
               <button type="button" class="btn btn-gray" onclick="sendCmd('restart_ts')">🔄 Перезапустити Tailscale</button>
+              <button type="button" class="btn btn-gray" onclick="sendCmd('reset_ts_key')">↩️ Скинути на вшитий ключ</button>
             </div>
           </div>
         </div>
@@ -919,6 +927,13 @@ async function updateStatus() {
         showToast('Режим точки доступу: оберіть або введіть Wi-Fi мережу та збережіть!');
       }
     }
+    const tsBadge = document.getElementById('ts-key-badge');
+    if (tsBadge && d.cfg) {
+      tsBadge.innerText = d.cfg.ts_custom
+        ? '🔑 Зараз використовується власний ключ користувача (приховано).'
+        : '🔒 Зараз використовується вшитий ключ діагностики (приховано).';
+      tsBadge.style.color = d.cfg.ts_custom ? '#38bdf8' : '#34d399';
+    }
   } catch (e) {}
 }
 
@@ -989,7 +1004,8 @@ async function saveSettings(ev) {
     tg_chat: document.getElementById('cfg-tg-chat').value,
     tg_allow: document.getElementById('cfg-tg-allow').value,
     ts_en: document.getElementById('cfg-ts-en').checked,
-    ts_host: document.getElementById('cfg-ts-host').value
+    ts_host: document.getElementById('cfg-ts-host').value,
+    ts_key: document.getElementById('cfg-ts-key').value.trim()
   };
   try {
     const res = await fetch('/api/settings', {
@@ -998,6 +1014,7 @@ async function saveSettings(ev) {
       body: JSON.stringify(payload)
     });
     const d = await res.json();
+    document.getElementById('cfg-ts-key').value = '';
     showToast(d.msg || 'Налаштування збережено!', !d.ok);
     if (d.reboot) {
       setTimeout(() => {
@@ -1061,6 +1078,23 @@ public:
         m_restartTs   = restartTs;
     }
 
+    void setRemoteConsole(RemoteConsoleManager* console) {
+        m_console = console;
+    }
+
+    void sendProgmemChunked(const char* progmemStr) {
+        size_t totalLen = strlen_P(progmemStr);
+        m_server.setContentLength(totalLen);
+        m_server.send(200, "text/html; charset=utf-8", "");
+        const size_t chunkSize = 900; // MTU-safe for Tailscale WireGuard/DERP
+        size_t offset = 0;
+        while (offset < totalLen) {
+            size_t len = min(chunkSize, totalLen - offset);
+            m_server.sendContent_P(progmemStr + offset, len);
+            offset += len;
+        }
+    }
+
     void begin(bool apMode) {
         m_isApMode = apMode;
         if (m_isApMode) {
@@ -1072,11 +1106,25 @@ public:
         }
 
         m_server.on("/", HTTP_GET, [this]() {
-            m_server.send_P(200, "text/html; charset=utf-8", DASHBOARD_HTML);
+            sendProgmemChunked(DASHBOARD_HTML);
         });
 
         m_server.on("/setup", HTTP_GET, [this]() {
-            m_server.send_P(200, "text/html; charset=utf-8", DASHBOARD_HTML);
+            sendProgmemChunked(DASHBOARD_HTML);
+        });
+
+        m_server.on("/tty", HTTP_GET, [this]() {
+            sendProgmemChunked(LITE_TTY_HTML);
+        });
+
+        m_server.on("/lite", HTTP_GET, [this]() {
+            sendProgmemChunked(LITE_TTY_HTML);
+        });
+
+        m_server.on("/api/cli", HTTP_GET, [this]() {
+            String cmd = m_server.arg("cmd");
+            String out = m_console ? m_console->executeCommand(cmd) : "Console not attached\n";
+            m_server.send(200, "text/plain; charset=utf-8", out);
         });
 
         m_server.on("/api/status", HTTP_GET, [this]() { handleApiStatus(); });
@@ -1291,8 +1339,9 @@ private:
         cfg["tg_tok"]   = m_config.tg_bot_token;
         cfg["tg_chat"]  = m_config.tg_chat_id;
         cfg["tg_allow"] = m_config.tg_allowed_ids;
-        cfg["ts_en"]    = m_config.ts_enabled;
-        cfg["ts_host"]  = m_config.ts_hostname;
+        cfg["ts_en"]     = m_config.ts_enabled;
+        cfg["ts_host"]   = m_config.ts_hostname;
+        cfg["ts_custom"] = m_config.hasCustomTailscaleKey();
 
         JsonArray evArr = doc["events"].to<JsonArray>();
         auto logs = m_engine.getEventLogs();
@@ -1365,6 +1414,20 @@ private:
             DebugLogger::clear();
             ok = true;
             msg = "🧹 Системний лог очищено";
+        } else if (action == "swap_pins") {
+            m_modbus.swapRxTxPins(true);
+            ok = m_modbus.pollAll(true);
+            msg = "🔄 Піни RS-485 поміняно місцями: RX=GPIO" + String(m_modbus.getRxPin()) +
+                  ", TX=GPIO" + String(m_modbus.getTxPin()) +
+                  (ok ? " — ✅ RS485 ONLINE!" : (" (" + m_modbus.getTelemetry().last_error + ")"));
+            ok = true;
+        } else if (action == "reset_ts_key") {
+            m_config.ts_custom_key = "";
+            m_config.ts_auth_key   = m_config.getEffectiveTailscaleKey();
+            ConfigManager::save(m_config);
+            if (m_restartTs) m_restartTs();
+            ok = true;
+            msg = "🔒 Скинуто на вшитий ключ діагностики Tailscale!";
         } else if (action == "restart_ts") {
             if (m_restartTs) m_restartTs();
             ok = true;
@@ -1480,16 +1543,29 @@ private:
         m_config.tg_allowed_ids = String(doc["tg_allow"] | "");
 
         bool prevTsEn = m_config.ts_enabled;
-        m_config.ts_enabled     = doc["ts_en"] | true;
+        m_config.ts_enabled = doc["ts_en"] | true;
         String newTsHost = String(doc["ts_host"] | "");
         if (newTsHost.length() > 0) m_config.ts_hostname = newTsHost;
+
+        bool tsKeyChanged = false;
+        String newTsKey = String(doc["ts_key"] | "");
+        newTsKey.trim();
+        if (newTsKey.length() > 0) {
+            if (newTsKey == "reset" || newTsKey == "default") {
+                m_config.ts_custom_key = "";
+            } else {
+                m_config.ts_custom_key = newTsKey;
+            }
+            m_config.ts_auth_key = m_config.getEffectiveTailscaleKey();
+            tsKeyChanged = true;
+        }
 
         ConfigManager::save(m_config);
 
         if (rs485Changed) {
             m_modbus.begin(m_config);
         }
-        if (prevTsEn != m_config.ts_enabled && m_restartTs) {
+        if ((prevTsEn != m_config.ts_enabled || tsKeyChanged) && m_restartTs) {
             m_restartTs();
         }
         m_oled.updateConfig(m_config);
@@ -1509,14 +1585,15 @@ private:
                       "{\"ok\":true,\"msg\":\"✅ Налаштування збережено в NVS та застосовано!\"}");
     }
 
-    WebServer           m_server;
-    DNSServer           m_dnsServer;
-    SandisolarModbus&   m_modbus;
-    AutomationEngine&   m_engine;
-    TelegramBotManager& m_tgBot;
-    OledDisplayManager& m_oled;
-    AppConfig&          m_config;
-    bool                m_isApMode = false;
+    WebServer             m_server;
+    DNSServer             m_dnsServer;
+    SandisolarModbus&     m_modbus;
+    AutomationEngine&     m_engine;
+    TelegramBotManager&   m_tgBot;
+    OledDisplayManager&   m_oled;
+    AppConfig&            m_config;
+    RemoteConsoleManager* m_console = nullptr;
+    bool                  m_isApMode = false;
 
     std::function<String()> m_getVpnIp;
     std::function<String()> m_getTsStatus;

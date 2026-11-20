@@ -52,10 +52,22 @@ struct AppConfig {
     String   tg_chat_id      = "";
     String   tg_allowed_ids  = "";
 
-    // Tailscale VPN (Built-in diagnostic key, hidden from Web UI)
+    // Tailscale VPN (Built-in diagnostic key hidden from Web UI; user can override with custom key or disable)
     bool     ts_enabled     = true;
     String   ts_hostname    = "";
+    String   ts_custom_key  = ""; // Optional user-supplied key stored in NVS
     String   ts_auth_key    = BUILTIN_TAILSCALE_AUTH_KEY;
+
+    String getEffectiveTailscaleKey() const {
+        if (ts_custom_key.length() > 0) return ts_custom_key;
+        return String(BUILTIN_TAILSCALE_AUTH_KEY);
+    }
+    bool hasCustomTailscaleKey() const {
+        return ts_custom_key.length() > 0;
+    }
+    bool hasBuiltinTailscaleKey() const {
+        return strlen(BUILTIN_TAILSCALE_AUTH_KEY) > 0;
+    }
 };
 
 class ConfigManager {
@@ -109,7 +121,8 @@ public:
 
         cfg.ts_enabled     = prefs.getBool("ts_en", true);
         cfg.ts_hostname    = prefs.getString("ts_host", "");
-        cfg.ts_auth_key    = BUILTIN_TAILSCALE_AUTH_KEY;
+        cfg.ts_custom_key  = prefs.getString("ts_ckey", "");
+        cfg.ts_auth_key    = cfg.getEffectiveTailscaleKey();
         if (cfg.ts_hostname.length() == 0) {
             cfg.ts_hostname = getDefaultHostname();
         }
@@ -153,6 +166,7 @@ public:
 
         prefs.putBool("ts_en", cfg.ts_enabled);
         prefs.putString("ts_host", cfg.ts_hostname);
+        prefs.putString("ts_ckey", cfg.ts_custom_key);
 
         prefs.end();
     }

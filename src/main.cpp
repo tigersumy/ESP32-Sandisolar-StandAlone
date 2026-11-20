@@ -12,6 +12,7 @@
 #include "AutomationEngine.h"
 #include "TelegramBotManager.h"
 #include "OledDisplayManager.h"
+#include "RemoteConsoleManager.h"
 #include "WebServerManager.h"
 
 #if ENABLE_TAILSCALE
@@ -23,12 +24,13 @@ extern "C" {
 
 #define BOOT_BUTTON_PIN 0
 
-static AppConfig          currentConfig;
-static SandisolarModbus   modbus;
-static AutomationEngine   engine(modbus, currentConfig);
-static TelegramBotManager tgBot(modbus, engine, currentConfig);
-static OledDisplayManager oled;
-static WebServerManager   webServer(modbus, engine, tgBot, oled, currentConfig);
+static AppConfig            currentConfig;
+static SandisolarModbus     modbus;
+static AutomationEngine     engine(modbus, currentConfig);
+static TelegramBotManager   tgBot(modbus, engine, currentConfig);
+static OledDisplayManager   oled;
+static RemoteConsoleManager remoteConsole(modbus, engine, currentConfig);
+static WebServerManager     webServer(modbus, engine, tgBot, oled, currentConfig);
 
 static bool     isApMode = false;
 static uint32_t lastModbusPollMs = 0;
@@ -63,6 +65,7 @@ static void onTailscaleStateChange(microlink_t* ml, microlink_state_t state, voi
 }
 
 void startTailscaleClient() {
+    currentConfig.ts_auth_key = currentConfig.getEffectiveTailscaleKey();
     if (!currentConfig.ts_enabled || currentConfig.ts_auth_key.length() == 0) {
         DebugLogger::warn("TAILSCALE", "Disabled or no Auth Key configured");
         tsStatusStr = "DISABLED";
@@ -70,7 +73,8 @@ void startTailscaleClient() {
     }
     if (mlHandle != nullptr) return;
 
-    DebugLogger::info("TAILSCALE", "Starting Tailscale client (hostname: '" + currentConfig.ts_hostname + "')...");
+    DebugLogger::info("TAILSCALE", "Starting Tailscale client (hostname: '" + currentConfig.ts_hostname +
+                      "', key: " + String(currentConfig.hasCustomTailscaleKey() ? "custom" : "built-in") + ")...");
     microlink_config_t cfg = {
         .auth_key = currentConfig.ts_auth_key.c_str(),
         .device_name = currentConfig.ts_hostname.c_str(),
@@ -256,7 +260,16 @@ void setup() {
         []() { return tsStatusStr; },
         []() { restartTailscaleClient(); }
     );
+    remoteConsole.setTailscaleCallbacks(
+        []() { return tsVpnIpStr; },
+        []() { return tsStatusStr; },
+        []() { restartTailscaleClient(); }
+    );
 #endif
+
+    // Attach Remote Console (TCP/Telnet 2323, UDP 4444, Web /tty)
+    webServer.setRemoteConsole(&remoteConsole);
+    remoteConsole.begin();
 
     // Start WebServer (Port 80)
     webServer.begin(isApMode);
@@ -270,6 +283,7 @@ void setup() {
 
 void loop() {
     webServer.loop();
+    remoteConsole.loop();
     if (WiFi.status() == WL_CONNECTED) {
         ArduinoOTA.handle();
     }

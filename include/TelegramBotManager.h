@@ -344,6 +344,10 @@ private:
                "• <b>/on</b> (🟢 SoftON) — Примусово увімкнути генерацію інвертора\n"
                "• <b>/off</b> (🛑 SoftOFF) — Перевести інвертор у SoftOFF (чистий байпас)\n"
                "• <b>/auto_on</b> / <b>/auto_off</b> — Увімк./вимк. автоматичне керування\n"
+               "• <b>/log</b> — Останні 25 рядків системного логу (інженерна діагностика)\n"
+               "• <b>/swap</b> — Поміняти місцями піни RS-485 RX ↔ TX (GPIO 17 ↔ 18)\n"
+               "• <b>/raw 3 0 1</b> — Пряме читання регістрів Modbus (FC, адреса, к-сть)\n"
+               "• <b>/reboot</b> — Перезавантажити контролер ESP32-S3\n"
                "• <b>/menu</b> — Показати кнопки меню";
     }
 
@@ -427,6 +431,55 @@ private:
             } else {
                 sendMessage(chatId, "⚠️ Вкажіть значення від 20 до 95%, наприклад: <code>/soc_on 75</code>", true);
             }
+        } else if (cmd == "/log" || cmd.startsWith("/log ")) {
+            String logs = DebugLogger::toPlainText(25);
+            logs.replace("<", "&lt;");
+            logs.replace(">", "&gt;");
+            sendMessage(chatId, "📋 <b>Системний лог (останні 25 записів):</b>\n<pre>" + logs + "</pre>", true);
+        } else if (cmd == "/swap" || cmd == "/swap_pins") {
+            m_modbus.swapRxTxPins(true);
+            bool ok = m_modbus.pollAll(true);
+            sendMessage(chatId, "🔄 <b>Піни RS-485 поміняно місцями:</b>\n"
+                                "• RX = <code>GPIO " + String(m_modbus.getRxPin()) + "</code>\n"
+                                "• TX = <code>GPIO " + String(m_modbus.getTxPin()) + "</code>\n"
+                                "• Статус: " + (ok ? "✅ <b>RS485 ONLINE!</b>" : ("❌ " + m_modbus.getTelemetry().last_error)), true);
+        } else if (cmd == "/trace_on") {
+            DebugLogger::setTraceModbus(true);
+            sendMessage(chatId, "🟢 <b>HEX-трасування пакетів RS-485 увімкнено.</b> Надішліть /log через кілька секунд для перегляду.", true);
+        } else if (cmd == "/trace_off") {
+            DebugLogger::setTraceModbus(false);
+            sendMessage(chatId, "⚪ <b>HEX-трасування пакетів RS-485 вимкнено.</b>", true);
+        } else if (cmd.startsWith("/raw ")) {
+            String args = text.substring(5);
+            args.trim();
+            int s1 = args.indexOf(' ');
+            int s2 = args.indexOf(' ', s1 + 1);
+            if (s1 < 0) {
+                sendMessage(chatId, "⚠️ Формат: <code>/raw &lt;fc 3|4&gt; &lt;addr&gt; [cnt=1]</code> (напр. <code>/raw 3 0 1</code>)", true);
+            } else {
+                uint8_t fc = (uint8_t)args.substring(0, s1).toInt();
+                uint16_t addr = (s2 < 0) ? (uint16_t)args.substring(s1 + 1).toInt() : (uint16_t)args.substring(s1 + 1, s2).toInt();
+                uint16_t cnt = (s2 < 0) ? 1 : (uint16_t)constrain(args.substring(s2 + 1).toInt(), 1, 20);
+                if (fc != 3 && fc != 4) fc = 3;
+                uint16_t regs[20];
+                bool ok = m_modbus.readRegisters(fc, addr, cnt, regs);
+                if (!ok) {
+                    sendMessage(chatId, "❌ Помилка Modbus FC=0x0" + String(fc) + " addr=" + String(addr) + ": " + m_modbus.getTelemetry().last_error, true);
+                } else {
+                    String out = "✅ <b>Modbus FC=0x0" + String(fc) + " (addr=" + String(addr) + ", cnt=" + String(cnt) + "):</b>\n<pre>";
+                    for (uint16_t i = 0; i < cnt; ++i) {
+                        char buf[48];
+                        snprintf(buf, sizeof(buf), "Reg %3u: %5u (0x%04X)\n", (unsigned)(addr + i), (unsigned)regs[i], (unsigned)regs[i]);
+                        out += buf;
+                    }
+                    out += "</pre>";
+                    sendMessage(chatId, out, true);
+                }
+            }
+        } else if (cmd == "/reboot") {
+            sendMessage(chatId, "🔄 <b>Перезавантаження ESP32-S3...</b>", true);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            ESP.restart();
         } else {
             sendMessage(chatId, "❓ Команда <code>" + text + "</code> не розпізнана.\nСкористайтеся кнопками меню внизу або надішліть /help.", true);
         }

@@ -14,7 +14,8 @@ public:
         m_dataMutex = xSemaphoreCreateMutex();
     }
 
-    void begin(const AppConfig& cfg) {
+    void begin(AppConfig& cfg) {
+        m_cfgPtr = &cfg;
         if (xSemaphoreTake(m_busMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
             m_slaveId = cfg.modbus_slave_id;
             m_rxPin   = cfg.rs485_rx_pin;
@@ -30,6 +31,24 @@ public:
                               " bps (Slave ID=" + String(m_slaveId) + ")");
         }
     }
+
+    // Swap RX and TX pins dynamically (e.g. GPIO 17 <-> GPIO 18) and re-initialize UART1
+    void swapRxTxPins(bool persistToNvs = true) {
+        if (!m_cfgPtr) return;
+        int8_t oldRx = m_cfgPtr->rs485_rx_pin;
+        int8_t oldTx = m_cfgPtr->rs485_tx_pin;
+        m_cfgPtr->rs485_rx_pin = oldTx;
+        m_cfgPtr->rs485_tx_pin = oldRx;
+        begin(*m_cfgPtr);
+        if (persistToNvs) {
+            ConfigManager::save(*m_cfgPtr);
+        }
+        DebugLogger::warn("MODBUS", "🔄 Swapped RS-485 pins: RX=GPIO" + String(m_rxPin) +
+                          ", TX=GPIO" + String(m_txPin));
+    }
+
+    int8_t getRxPin() const { return m_rxPin; }
+    int8_t getTxPin() const { return m_txPin; }
 
     SandisolarTelemetry getTelemetry() const {
         SandisolarTelemetry copy;
@@ -79,6 +98,10 @@ public:
         DebugLogger::logTx("MODBUS", req, 8, "FC=" + String(funcCode) + " Addr=" + String(startAddr) + " Cnt=" + String(count));
         m_serial.write(req, 8);
         m_serial.flush();
+        // Flush any TX self-echo/crosstalk accumulated during the 8.33ms transmission
+        // (200us is < 2 bit-times at 9600 bps, whereas 1 response byte takes 1042us to shift in)
+        delayMicroseconds(200);
+        while (m_serial.available()) m_serial.read();
 
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             m_telemetry.tx_count++;
@@ -199,6 +222,8 @@ done_rx_loop:
         DebugLogger::logTx("MODBUS", req, 8, "WRITE Reg=" + String(regAddr) + " Val=" + String(value));
         m_serial.write(req, 8);
         m_serial.flush();
+        delayMicroseconds(200);
+        while (m_serial.available()) m_serial.read();
 
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             m_telemetry.tx_count++;
@@ -501,15 +526,32 @@ done_tx_loop:
             }
         }
 
+        bool shouldAutoSwap = false;
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             if (anyCoreSuccess) {
                 m_telemetry.online = true;
                 m_telemetry.last_success_ms = millis();
                 m_telemetry.last_error = "OK";
-            } else if (millis() - m_telemetry.last_success_ms > 15000) {
-                m_telemetry.online = false;
+                m_noRxCycles = 0;
+            } else {
+                if (millis() - m_telemetry.last_success_ms > 15000) {
+                    m_telemetry.online = false;
+                }
+                if (m_telemetry.rx_count == 0) {
+                    m_noRxCycles++;
+                    if (m_noRxCycles >= 3) {
+                        m_noRxCycles = 0;
+                        shouldAutoSwap = true;
+                    }
+                }
             }
             xSemaphoreGive(m_dataMutex);
+        }
+
+        if (shouldAutoSwap && m_cfgPtr != nullptr) {
+            DebugLogger::warn("MODBUS", "⚠️ 0 відповідей за 3 цикли — авто-перевірка реверсу RX/TX (GPIO " +
+                              String(m_rxPin) + " <-> GPIO " + String(m_txPin) + ")...");
+            swapRxTxPins(true);
         }
 
         return anyCoreSuccess;
@@ -538,10 +580,12 @@ private:
     SemaphoreHandle_t   m_busMutex = nullptr;
     mutable SemaphoreHandle_t m_dataMutex = nullptr;
     SandisolarTelemetry m_telemetry;
+    AppConfig*          m_cfgPtr = nullptr;
     uint8_t             m_slaveId = 1;
     int8_t              m_rxPin = 17;
     int8_t              m_txPin = 18;
     uint32_t            m_baud = 9600;
     uint32_t            m_pollCycle = 0;
+    uint32_t            m_noRxCycles = 0;
     bool                m_forceFullHoldingPoll = true;
 };

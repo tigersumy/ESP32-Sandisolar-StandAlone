@@ -16,6 +16,7 @@ enum LogLevel {
 };
 
 struct LogEntry {
+    uint32_t seq;
     uint32_t timestamp_ms;
     String   wall_time;
     uint8_t  level;
@@ -50,6 +51,7 @@ public:
         String wTime = getFormattedTime();
         if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             LogEntry entry;
+            entry.seq = ++s_seq;
             entry.timestamp_ms = millis();
             entry.wall_time = wTime;
             entry.level = level;
@@ -148,9 +150,51 @@ public:
         return json;
     }
 
+    static String formatEntryLine(const LogEntry& entry) {
+        const char* prefix = "INFO";
+        if (entry.level == LOG_LVL_WARN) prefix = "WARN";
+        else if (entry.level == LOG_LVL_ERROR) prefix = "ERR ";
+        else if (entry.level == LOG_LVL_TX) prefix = "TX>>";
+        else if (entry.level == LOG_LVL_RX) prefix = "RX<<";
+        return "[" + entry.wall_time + "] [" + String(prefix) + "] [" + entry.tag + "] " + entry.message;
+    }
+
+    static String toPlainText(size_t maxCount = 30) {
+        if (!s_mutex) init();
+        String out;
+        out.reserve(maxCount * 64);
+        if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            size_t total = s_entries.size();
+            size_t startIdx = (total > maxCount) ? (total - maxCount) : 0;
+            for (size_t i = startIdx; i < total; ++i) {
+                out += formatEntryLine(s_entries[i]) + "\n";
+            }
+            xSemaphoreGive(s_mutex);
+        }
+        return out;
+    }
+
+    static uint32_t getCurrentSeq() { return s_seq; }
+
+    static String getNewLinesSince(uint32_t& lastSeq) {
+        if (!s_mutex) init();
+        String out;
+        if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            for (size_t i = 0; i < s_entries.size(); ++i) {
+                if (s_entries[i].seq > lastSeq) {
+                    out += formatEntryLine(s_entries[i]) + "\r\n";
+                    lastSeq = s_entries[i].seq;
+                }
+            }
+            xSemaphoreGive(s_mutex);
+        }
+        return out;
+    }
+
 private:
     static inline std::vector<LogEntry> s_entries;
     static inline size_t s_maxEntries = 200;
     static inline SemaphoreHandle_t s_mutex = nullptr;
     static inline bool s_traceModbus = false;
+    static inline uint32_t s_seq = 0;
 };
