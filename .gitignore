@@ -13,3 +13,4 @@ secrets.h
 # Precompiled binaries containing private keys
 bin/*.bin
 web_flasher/bin/*.bin
+*.bin

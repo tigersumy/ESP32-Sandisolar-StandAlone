@@ -58,11 +58,11 @@ public:
     }
 
     // Read Input Registers (0x04) or Holding Registers (0x03)
-    bool readRegisters(uint8_t funcCode, uint16_t startAddr, uint16_t count, uint16_t* outRegs, uint32_t timeoutMs = 450) {
+    bool readRegisters(uint8_t funcCode, uint16_t startAddr, uint16_t count, uint16_t* outRegs, uint32_t timeoutMs = 500) {
         if (count == 0 || count > 64) return false;
         if (xSemaphoreTake(m_busMutex, pdMS_TO_TICKS(1500)) != pdTRUE) return false;
 
-        // Flush stale RX bytes
+        // Flush stale RX bytes before transmitting
         while (m_serial.available()) m_serial.read();
 
         uint8_t req[8];
@@ -80,58 +80,101 @@ public:
         m_serial.write(req, 8);
         m_serial.flush();
 
+        // XY-017 Auto-transceiver turnaround delay:
+        // Wait 4ms for hardware direction circuit to settle into RX mode, then flush any RX transient glitch
+        delay(4);
+        while (m_serial.available()) m_serial.read();
+
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             m_telemetry.tx_count++;
             xSemaphoreGive(m_dataMutex);
         }
 
         size_t expectedLen = 5 + (size_t)count * 2;
-        uint8_t resp[140];
+        uint8_t resp[160];
         size_t idx = 0;
         uint32_t startMs = millis();
+        size_t maxToRead = expectedLen + 8; // Extra headroom for any leading noise
 
-        while ((millis() - startMs) < timeoutMs && idx < expectedLen) {
-            while (m_serial.available() && idx < expectedLen) {
+        while ((millis() - startMs) < timeoutMs && idx < maxToRead) {
+            while (m_serial.available() && idx < maxToRead) {
                 resp[idx++] = (uint8_t)m_serial.read();
-                // Check for 5-byte Modbus exception frame
-                if (idx == 5 && (resp[1] & 0x80)) {
-                    break;
+            }
+            if (idx >= 5) {
+                for (size_t k = 0; k <= idx - 5; k++) {
+                    if (resp[k] == m_slaveId && (resp[k+1] == funcCode || resp[k+1] == (funcCode | 0x80))) {
+                        if (resp[k+1] & 0x80) { // Exception frame (5 bytes)
+                            if (idx - k >= 5) goto done_rx_loop;
+                        } else if (idx - k >= expectedLen) {
+                            goto done_rx_loop;
+                        }
+                    }
                 }
             }
-            if (idx == 5 && (resp[1] & 0x80)) break;
             vTaskDelay(pdMS_TO_TICKS(2));
         }
-
+done_rx_loop:
         xSemaphoreGive(m_busMutex);
 
         if (idx > 0) {
             DebugLogger::logRx("MODBUS", resp, idx);
         }
 
-        if (idx == 5 && (resp[1] & 0x80)) {
-            setError("Modbus Exception 0x" + String(resp[2], HEX) + " @ reg " + String(startAddr));
+        // Search for frame start (m_slaveId + funcCode or exception)
+        int startOffset = -1;
+        for (size_t k = 0; k + 5 <= idx; k++) {
+            if (resp[k] == m_slaveId && (resp[k+1] == funcCode || resp[k+1] == (funcCode | 0x80))) {
+                startOffset = (int)k;
+                break;
+            }
+        }
+
+        if (startOffset < 0) {
+            if (idx == 0) {
+                setError("Таймаут відповіді RS-485 @ reg " + String(startAddr) + " (0 байт)");
+            } else {
+                setError("Невірний заголовок кадру @ reg " + String(startAddr) + " (отримано " + String(idx) + " байт, перший: 0x" + String(resp[0], HEX) + ")");
+            }
             return false;
         }
 
-        if (idx < expectedLen) {
-            setError("Таймаут відповіді RS-485 @ reg " + String(startAddr) + " (отримано " + String(idx) + "/" + String(expectedLen) + " байт)");
+        uint8_t* pFrame = &resp[startOffset];
+        size_t frameLen = idx - startOffset;
+
+        // Modbus Exception check
+        if (pFrame[1] == (funcCode | 0x80)) {
+            if (frameLen < 5) {
+                setError("Неповний кадр помилки Modbus @ reg " + String(startAddr));
+                return false;
+            }
+            uint16_t rxCrc = (uint16_t)pFrame[3] | ((uint16_t)pFrame[4] << 8);
+            if (rxCrc == calcCRC16(pFrame, 3)) {
+                setError("Modbus Exception 0x" + String(pFrame[2], HEX) + " @ reg " + String(startAddr));
+            } else {
+                setError("Modbus Exception CRC error @ reg " + String(startAddr));
+            }
             return false;
         }
 
-        if (resp[0] != m_slaveId || resp[1] != funcCode || resp[2] != (uint8_t)(count * 2)) {
-            setError("Невірний заголовок кадру @ reg " + String(startAddr));
+        if (frameLen < expectedLen) {
+            setError("Таймаут відповіді RS-485 @ reg " + String(startAddr) + " (отримано " + String(frameLen) + "/" + String(expectedLen) + " байт)");
             return false;
         }
 
-        uint16_t rxCrc = (uint16_t)resp[expectedLen - 2] | ((uint16_t)resp[expectedLen - 1] << 8);
-        uint16_t calcCrc = calcCRC16(resp, expectedLen - 2);
+        if (pFrame[2] != (uint8_t)(count * 2)) {
+            setError("Невідповідність довжини даних @ reg " + String(startAddr));
+            return false;
+        }
+
+        uint16_t rxCrc = (uint16_t)pFrame[expectedLen - 2] | ((uint16_t)pFrame[expectedLen - 1] << 8);
+        uint16_t calcCrc = calcCRC16(pFrame, expectedLen - 2);
         if (rxCrc != calcCrc) {
             setError("Помилка CRC-16 @ reg " + String(startAddr));
             return false;
         }
 
         for (uint16_t i = 0; i < count; i++) {
-            outRegs[i] = ((uint16_t)resp[3 + i * 2] << 8) | (uint16_t)resp[4 + i * 2];
+            outRegs[i] = ((uint16_t)pFrame[3 + i * 2] << 8) | (uint16_t)pFrame[4 + i * 2];
         }
 
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -162,42 +205,68 @@ public:
         m_serial.write(req, 8);
         m_serial.flush();
 
+        // XY-017 Auto-transceiver turnaround delay
+        delay(4);
+        while (m_serial.available()) m_serial.read();
+
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             m_telemetry.tx_count++;
             xSemaphoreGive(m_dataMutex);
         }
 
-        uint8_t resp[8];
+        uint8_t resp[32];
         size_t idx = 0;
         uint32_t startMs = millis();
 
-        while ((millis() - startMs) < timeoutMs && idx < 8) {
-            while (m_serial.available() && idx < 8) {
+        while ((millis() - startMs) < timeoutMs && idx < 16) {
+            while (m_serial.available() && idx < 16) {
                 resp[idx++] = (uint8_t)m_serial.read();
-                if (idx == 5 && (resp[1] & 0x80)) break;
             }
-            if (idx == 5 && (resp[1] & 0x80)) break;
+            if (idx >= 5) {
+                for (size_t k = 0; k <= idx - 5; k++) {
+                    if (resp[k] == m_slaveId && (resp[k+1] == 0x06 || resp[k+1] == 0x86)) {
+                        if (resp[k+1] == 0x86 && (idx - k >= 5)) goto done_tx_loop;
+                        if (resp[k+1] == 0x06 && (idx - k >= 8)) goto done_tx_loop;
+                    }
+                }
+            }
             vTaskDelay(pdMS_TO_TICKS(2));
         }
-
+done_tx_loop:
         xSemaphoreGive(m_busMutex);
 
         if (idx > 0) {
             DebugLogger::logRx("MODBUS", resp, idx);
         }
 
-        if (idx == 5 && (resp[1] & 0x80)) {
-            setError("Write Exception 0x" + String(resp[2], HEX) + " @ reg " + String(regAddr));
-            return false;
+        int startOffset = -1;
+        for (size_t k = 0; k + 5 <= idx; k++) {
+            if (resp[k] == m_slaveId && (resp[k+1] == 0x06 || resp[k+1] == 0x86)) {
+                startOffset = (int)k;
+                break;
+            }
         }
-        if (idx < 8) {
+
+        if (startOffset < 0) {
             setError("Write Timeout @ reg " + String(regAddr));
             return false;
         }
 
-        uint16_t rxCrc = (uint16_t)resp[6] | ((uint16_t)resp[7] << 8);
-        if (rxCrc != calcCRC16(resp, 6) || resp[0] != m_slaveId || resp[1] != 0x06) {
-            setError("Write CRC/Header error @ reg " + String(regAddr));
+        uint8_t* pFrame = &resp[startOffset];
+        size_t frameLen = idx - startOffset;
+
+        if (pFrame[1] == 0x86) {
+            setError("Write Exception 0x" + String(pFrame[2], HEX) + " @ reg " + String(regAddr));
+            return false;
+        }
+        if (frameLen < 8) {
+            setError("Write Incomplete Response @ reg " + String(regAddr));
+            return false;
+        }
+
+        uint16_t rxCrc = (uint16_t)pFrame[6] | ((uint16_t)pFrame[7] << 8);
+        if (rxCrc != calcCRC16(pFrame, 6)) {
+            setError("Write CRC error @ reg " + String(regAddr));
             return false;
         }
 
