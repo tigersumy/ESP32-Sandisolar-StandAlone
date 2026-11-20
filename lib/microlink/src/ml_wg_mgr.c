@@ -424,14 +424,14 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
             }
         }
 
-        /* Peer table full — evict LRU non-priority peer if incoming peer is priority */
-        if (idx < 0 && ml->config.priority_peer_ip != 0 &&
-            update->vpn_ip == ml->config.priority_peer_ip) {
+        /* Peer table full — evict LRU non-priority peer */
+        if (idx < 0) {
             uint64_t oldest_ms = UINT64_MAX;
             int evict_idx = -1;
             for (int i = 0; i < ML_MAX_PEERS; i++) {
                 if (!ml->peers[i].active) continue;
-                if (ml->peers[i].vpn_ip == ml->config.priority_peer_ip) continue;
+                if (ml->config.priority_peer_ip != 0 &&
+                    ml->peers[i].vpn_ip == ml->config.priority_peer_ip) continue;
                 uint64_t last_activity = ml->peers[i].last_send_ms;
                 if (ml->peers[i].last_pong_recv_ms > last_activity)
                     last_activity = ml->peers[i].last_pong_recv_ms;
@@ -527,18 +527,11 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
         IP4_ADDR(&wg_peer.allowed_ip.u_addr.ip4, ip_a, ip_b, ip_c, ip_d);
         IP4_ADDR(&wg_peer.allowed_mask.u_addr.ip4, 255, 255, 255, 255);
 
-        /* Set endpoint if available, otherwise leave blank for DERP-only */
-        if (p->endpoint_count > 0 && p->endpoints[0].ip != 0) {
-            uint8_t ea = (p->endpoints[0].ip >> 24) & 0xFF;
-            uint8_t eb = (p->endpoints[0].ip >> 16) & 0xFF;
-            uint8_t ec = (p->endpoints[0].ip >> 8) & 0xFF;
-            uint8_t ed = p->endpoints[0].ip & 0xFF;
-            IP4_ADDR(&wg_peer.endpoint_ip.u_addr.ip4, ea, eb, ec, ed);
-            wg_peer.endport_port = p->endpoints[0].port;
-        } else {
-            ip_addr_set_any(false, &wg_peer.endpoint_ip);
-            wg_peer.endport_port = 0;
-        }
+        /* Always start with DERP relay (0.0.0.0:0) until DISCO verifies a direct UDP path via PONG.
+         * Setting an unverified MapResponse endpoint (often a private LAN IP on another network)
+         * causes wireguardif to send data packets to an unreachable UDP endpoint instead of DERP. */
+        ip_addr_set_any(false, &wg_peer.endpoint_ip);
+        wg_peer.endport_port = 0;
 
         wg_peer.keep_alive = 25;
 

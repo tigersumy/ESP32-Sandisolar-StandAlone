@@ -83,7 +83,7 @@ void startTailscaleClient() {
         .enable_disco = true,
         .max_peers = 32,
         .wifi_tx_power_dbm = 15,
-        .priority_peer_ip = 0,
+        .priority_peer_ip = microlink_parse_ip("100.80.147.23"),
         .disco_heartbeat_ms = 0,
         .stun_interval_ms = 0,
         .ctrl_watchdog_ms = 0

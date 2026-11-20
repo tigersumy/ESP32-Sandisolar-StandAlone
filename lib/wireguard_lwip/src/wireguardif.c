@@ -408,8 +408,13 @@ static void wireguardif_process_response_message(struct wireguard_device *device
 		       peer->public_key[0], peer->public_key[1],
 		       peer->public_key[2], peer->public_key[3],
 		       ip_addr_isany(addr) ? "DERP" : ipaddr_ntoa(addr), port);
-		// Update the peer location
-		update_peer_addr(peer, addr, port);
+		// Update the peer location (if response arrived via DERP, route session via DERP)
+		if (ip_addr_isany(addr)) {
+			ip_addr_set_any(false, &peer->ip);
+			peer->port = 0;
+		} else {
+			update_peer_addr(peer, addr, port);
+		}
 
 		wireguard_start_session(peer, true);
 		printf("[WG] Session started, sending keepalive to %s:%u\n",
@@ -805,31 +810,19 @@ void wireguardif_network_rx(void *arg, struct udp_pcb *pcb, struct pbuf *p, cons
 				peer = wireguard_process_initiation_message(device, msg_initiation);
 				if (peer) {
 					printf("[WG_RX] Initiation processed OK, sending response\n");
-					// Update the peer location
-					update_peer_addr(peer, addr, port);
-
-					// If initiation arrived via DERP (addr=0.0.0.0), send response
-					// via DERP too by temporarily clearing the peer endpoint.
-					// The ESP32 on cellular may not reach the peer's direct endpoint.
-					ip_addr_t saved_ip;
-					u16_t saved_port;
+					// If initiation arrived via DERP (addr=0.0.0.0), route the response AND subsequent
+					// session data packets via DERP until a direct UDP packet arrives.
 					bool via_derp = ip_addr_isany(addr);
 					if (via_derp) {
-						saved_ip = peer->ip;
-						saved_port = peer->port;
 						ip_addr_set_any(false, &peer->ip);
 						peer->port = 0;
-						printf("[WG_RX] Sending response via DERP (initiation was relayed)\n");
+						printf("[WG_RX] Sending response & routing session via DERP (initiation was relayed)\n");
+					} else {
+						update_peer_addr(peer, addr, port);
 					}
 
 					// Send back a handshake response
 					wireguardif_send_handshake_response(device, peer);
-
-					// Restore peer endpoint after sending
-					if (via_derp) {
-						peer->ip = saved_ip;
-						peer->port = saved_port;
-					}
 				} else {
 					printf("[WG_RX] Initiation process FAILED (bad keys/timestamp?)\n");
 				}
