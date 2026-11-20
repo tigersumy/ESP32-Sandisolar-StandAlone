@@ -80,21 +80,16 @@ public:
         m_serial.write(req, 8);
         m_serial.flush();
 
-        // XY-017 Auto-transceiver turnaround delay:
-        // Wait 4ms for hardware direction circuit to settle into RX mode, then flush any RX transient glitch
-        delay(4);
-        while (m_serial.available()) m_serial.read();
-
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             m_telemetry.tx_count++;
             xSemaphoreGive(m_dataMutex);
         }
 
         size_t expectedLen = 5 + (size_t)count * 2;
-        uint8_t resp[160];
+        uint8_t resp[192];
         size_t idx = 0;
         uint32_t startMs = millis();
-        size_t maxToRead = expectedLen + 8; // Extra headroom for any leading noise
+        size_t maxToRead = expectedLen + 16; // Headroom for any leading line noise/glitch (e.g. F9)
 
         while ((millis() - startMs) < timeoutMs && idx < maxToRead) {
             while (m_serial.available() && idx < maxToRead) {
@@ -205,16 +200,12 @@ done_rx_loop:
         m_serial.write(req, 8);
         m_serial.flush();
 
-        // XY-017 Auto-transceiver turnaround delay
-        delay(4);
-        while (m_serial.available()) m_serial.read();
-
         if (xSemaphoreTake(m_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             m_telemetry.tx_count++;
             xSemaphoreGive(m_dataMutex);
         }
 
-        uint8_t resp[32];
+        uint8_t resp[48];
         size_t idx = 0;
         uint32_t startMs = millis();
 
