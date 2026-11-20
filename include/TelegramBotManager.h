@@ -431,26 +431,27 @@ private:
             } else {
                 sendMessage(chatId, "⚠️ Вкажіть значення від 20 до 95%, наприклад: <code>/soc_on 75</code>", true);
             }
-        } else if (cmd == "/log" || cmd.startsWith("/log ")) {
+        } else if (cmd == "/log" || cmd == "log" || cmd.startsWith("/log ") || cmd.startsWith("log ")) {
             String logs = DebugLogger::toPlainText(25);
             logs.replace("<", "&lt;");
             logs.replace(">", "&gt;");
             sendMessage(chatId, "📋 <b>Системний лог (останні 25 записів):</b>\n<pre>" + logs + "</pre>", true);
-        } else if (cmd == "/swap" || cmd == "/swap_pins") {
+        } else if (cmd == "/swap" || cmd == "swap" || cmd == "/swap_pins") {
             m_modbus.swapRxTxPins(true);
             bool ok = m_modbus.pollAll(true);
             sendMessage(chatId, "🔄 <b>Піни RS-485 поміняно місцями:</b>\n"
                                 "• RX = <code>GPIO " + String(m_modbus.getRxPin()) + "</code>\n"
                                 "• TX = <code>GPIO " + String(m_modbus.getTxPin()) + "</code>\n"
                                 "• Статус: " + (ok ? "✅ <b>RS485 ONLINE!</b>" : ("❌ " + m_modbus.getTelemetry().last_error)), true);
-        } else if (cmd == "/trace_on") {
+        } else if (cmd == "/trace_on" || cmd == "trace_on" || cmd == "trace on") {
             DebugLogger::setTraceModbus(true);
             sendMessage(chatId, "🟢 <b>HEX-трасування пакетів RS-485 увімкнено.</b> Надішліть /log через кілька секунд для перегляду.", true);
-        } else if (cmd == "/trace_off") {
+        } else if (cmd == "/trace_off" || cmd == "trace_off" || cmd == "trace off" || cmd.startsWith("/trace_on /trace_off")) {
             DebugLogger::setTraceModbus(false);
             sendMessage(chatId, "⚪ <b>HEX-трасування пакетів RS-485 вимкнено.</b>", true);
-        } else if (cmd.startsWith("/raw ")) {
-            String args = text.substring(5);
+        } else if (cmd.startsWith("/raw ") || cmd.startsWith("raw ") || cmd.startsWith("/mb ") || cmd.startsWith("mb ")) {
+            int sp = text.indexOf(' ');
+            String args = (sp >= 0) ? text.substring(sp + 1) : "";
             args.trim();
             int s1 = args.indexOf(' ');
             int s2 = args.indexOf(' ', s1 + 1);
@@ -476,12 +477,26 @@ private:
                     sendMessage(chatId, out, true);
                 }
             }
-        } else if (cmd == "/reboot") {
+        } else if (cmd == "/reboot" || cmd == "reboot") {
+            m_pendingReboot = true;
             sendMessage(chatId, "🔄 <b>Перезавантаження ESP32-S3...</b>", true);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            ESP.restart();
         } else {
             sendMessage(chatId, "❓ Команда <code>" + text + "</code> не розпізнана.\nСкористайтеся кнопками меню внизу або надішліть /help.", true);
+        }
+    }
+
+    void acknowledgeUpdates() {
+        if (m_lastUpdateId <= 0 || m_config.tg_bot_token.length() == 0) return;
+        WiFiClientSecure client;
+        client.setInsecure();
+        client.setTimeout(5);
+        HTTPClient http;
+        http.setTimeout(5000);
+        String url = "https://api.telegram.org/bot" + m_config.tg_bot_token +
+                     "/getUpdates?offset=" + String(m_lastUpdateId + 1) + "&limit=1&timeout=0";
+        if (http.begin(client, url)) {
+            http.GET();
+            http.end();
         }
     }
 
@@ -495,8 +510,17 @@ private:
 
         HTTPClient http;
         http.setTimeout(12000);
-        String url = "https://api.telegram.org/bot" + m_config.tg_bot_token +
-                     "/getUpdates?offset=" + String(m_lastUpdateId + 1) + "&limit=5&timeout=3";
+
+        // On first poll after boot, flush any pre-boot queued commands (offset=-1)
+        // to prevent re-executing stale /reboot or control commands after a restart.
+        String url;
+        if (!m_bootSynced) {
+            url = "https://api.telegram.org/bot" + m_config.tg_bot_token +
+                  "/getUpdates?offset=-1&limit=1&timeout=0";
+        } else {
+            url = "https://api.telegram.org/bot" + m_config.tg_bot_token +
+                  "/getUpdates?offset=" + String(m_lastUpdateId + 1) + "&limit=5&timeout=2";
+        }
 
         if (http.begin(client, url)) {
             int code = http.GET();
@@ -506,6 +530,19 @@ private:
                 DeserializationError err = deserializeJson(doc, body);
                 if (!err && doc["ok"].as<bool>()) {
                     JsonArray arr = doc["result"].as<JsonArray>();
+                    if (!m_bootSynced) {
+                        for (JsonObject upd : arr) {
+                            int64_t updId = upd["update_id"].as<int64_t>();
+                            if (updId > m_lastUpdateId) m_lastUpdateId = updId;
+                        }
+                        m_bootSynced = true;
+                        http.end();
+                        if (m_lastUpdateId > 0) {
+                            acknowledgeUpdates();
+                        }
+                        DebugLogger::info("TELEGRAM", "Boot sync complete (flushed old queue up to update_id=" + String((long)m_lastUpdateId) + ")");
+                        return;
+                    }
                     for (JsonObject upd : arr) {
                         int64_t updId = upd["update_id"].as<int64_t>();
                         if (updId > m_lastUpdateId) {
@@ -531,6 +568,13 @@ private:
                 }
             }
             http.end();
+        }
+
+        if (m_pendingReboot) {
+            m_pendingReboot = false;
+            acknowledgeUpdates();
+            vTaskDelay(pdMS_TO_TICKS(800));
+            ESP.restart();
         }
     }
 
@@ -562,4 +606,6 @@ private:
     int64_t           m_lastUpdateId = 0;
     uint32_t          m_lastPollMs = 0;
     String            m_vpnIp = "";
+    bool              m_bootSynced = false;
+    bool              m_pendingReboot = false;
 };
