@@ -104,7 +104,7 @@ public:
 
         cfg.auto_enabled            = prefs.getBool("auto_en", true);
         cfg.eval_interval_s         = prefs.getUInt("eval_s", 60);
-        if (cfg.eval_interval_s < 10) cfg.eval_interval_s = 10;
+        if (cfg.eval_interval_s < 5) cfg.eval_interval_s = 5;
         cfg.grid_v_threshold        = prefs.getFloat("grid_v", 100.0f);
         cfg.soc_off_threshold       = prefs.getInt("soc_off", 95);
         cfg.soc_on_threshold        = prefs.getInt("soc_on", 75);

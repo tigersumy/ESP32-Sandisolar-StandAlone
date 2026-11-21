@@ -610,7 +610,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
             <label style="font-size:0.75rem; color:var(--muted);">Поріг наявності мережі 220В (В):</label>
             <input type="number" id="cfg-grid-v" min="50" max="190" step="1" required>
             <label style="font-size:0.75rem; color:var(--muted);">Інтервал оцінки правил (с, дебаунс 2×):</label>
-            <input type="number" id="cfg-eval-s" min="10" max="300" required>
+            <input type="number" id="cfg-eval-s" min="5" max="300" required>
             <label style="font-size:0.75rem; color:var(--muted);">Номінальна ємність АКБ для прогнозу ETA (А·год):</label>
             <input type="number" id="cfg-cap-ah" min="10" max="1000" step="1" required>
             <label style="font-size:0.78rem; display:flex; align-items:center; gap:8px; margin-top:4px;">
@@ -1511,7 +1511,7 @@ private:
         m_config.soc_on_threshold    = constrain((int)(doc["soc_on"]  | m_config.soc_on_threshold), 15, 95);
         m_config.cold_temp_threshold = doc["cold_t"] | m_config.cold_temp_threshold;
         m_config.grid_v_threshold    = doc["grid_v"] | m_config.grid_v_threshold;
-        m_config.eval_interval_s     = constrain((int)(doc["eval_s"] | m_config.eval_interval_s), 10, 600);
+        m_config.eval_interval_s     = constrain((int)(doc["eval_s"] | m_config.eval_interval_s), 5, 600);
         m_config.battery_capacity_ah = doc["cap_ah"] | m_config.battery_capacity_ah;
         m_config.solar_prio_auto     = doc["sol_auto"] | false;
 
