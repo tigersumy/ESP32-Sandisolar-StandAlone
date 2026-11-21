@@ -1098,8 +1098,9 @@ public:
     void begin(bool apMode) {
         m_isApMode = apMode;
         if (m_isApMode) {
-            WiFi.disconnect(false, true); // Reset station state machine
             WiFi.mode(WIFI_AP_STA);
+            WiFi.disconnect(false, true); // Reset station state machine after WiFi/lwIP init
+            delay(50);
             WiFi.softAP("Sandisolar-S3-Setup");
             m_dnsServer.start(53, "*", WiFi.softAPIP());
             DebugLogger::info("WEB", "Started AP Captive Portal 'Sandisolar-S3-Setup' at http://192.168.4.1/");

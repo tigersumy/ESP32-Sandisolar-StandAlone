@@ -267,12 +267,14 @@ void setup() {
     );
 #endif
 
-    // Attach Remote Console (TCP/Telnet 2323, UDP 4444, Web /tty)
+    // Attach Remote Console callbacks before starting servers
     webServer.setRemoteConsole(&remoteConsole);
-    remoteConsole.begin();
 
-    // Start WebServer (Port 80)
+    // Start WebServer FIRST (in AP mode this initializes WiFi/lwIP stack before any sockets are opened!)
     webServer.begin(isApMode);
+
+    // Start Remote Console (TCP/Telnet 2323, UDP 4444, Web /tty) AFTER lwIP/WiFi is up
+    remoteConsole.begin();
 
     // Start Interactive Telegram Bot Task on Core 0
     tgBot.begin();
