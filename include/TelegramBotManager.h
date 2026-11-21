@@ -519,13 +519,6 @@ private:
             return; // Guard against OOM crash during concurrent Web/Tailscale activity
         }
 
-        WiFiClientSecure client;
-        client.setInsecure();
-        client.setTimeout(8);
-
-        HTTPClient http;
-        http.setTimeout(8000);
-
         // On first poll after boot, flush any pre-boot queued commands (offset=-1)
         // to prevent re-executing stale /reboot or control commands after a restart.
         String url;
@@ -537,59 +530,74 @@ private:
                   "/getUpdates?offset=" + String(m_lastUpdateId + 1) + "&limit=5&timeout=1";
         }
 
-        if (http.begin(client, url)) {
-            int code = http.GET();
-            if (code == 200) {
-                m_backoffUntilMs = 0;
-                String body = http.getString();
-                JsonDocument doc;
-                DeserializationError err = deserializeJson(doc, body);
-                if (!err && doc["ok"].as<bool>()) {
-                    JsonArray arr = doc["result"].as<JsonArray>();
-                    if (!m_bootSynced) {
-                        for (JsonObject upd : arr) {
-                            int64_t updId = upd["update_id"].as<int64_t>();
-                            if (updId > m_lastUpdateId) m_lastUpdateId = updId;
-                        }
-                        m_bootSynced = true;
-                        http.end();
-                        if (m_lastUpdateId > 0) {
-                            acknowledgeUpdates();
-                        }
-                        DebugLogger::info("TELEGRAM", "Boot sync complete (flushed old queue up to update_id=" + String((long)m_lastUpdateId) + ")");
-                        return;
-                    }
+        // Scope WiFiClientSecure + HTTPClient so ~45KB mbedTLS RAM is completely freed
+        // BEFORE calling sendMessage() / acknowledgeUpdates() (avoids dual-TLS OOM HTTP -1!).
+        int code = -1;
+        String body;
+        {
+            WiFiClientSecure client;
+            client.setInsecure();
+            client.setTimeout(8);
+
+            HTTPClient http;
+            http.setTimeout(8000);
+
+            if (http.begin(client, url)) {
+                code = http.GET();
+                if (code == 200) {
+                    body = http.getString();
+                }
+                http.end();
+            }
+            client.stop();
+        }
+
+        if (code == 200) {
+            m_backoffUntilMs = 0;
+            JsonDocument doc;
+            DeserializationError err = deserializeJson(doc, body);
+            body = ""; // Free JSON response string before opening reply TLS
+            if (!err && doc["ok"].as<bool>()) {
+                JsonArray arr = doc["result"].as<JsonArray>();
+                if (!m_bootSynced) {
                     for (JsonObject upd : arr) {
                         int64_t updId = upd["update_id"].as<int64_t>();
-                        if (updId > m_lastUpdateId) {
-                            m_lastUpdateId = updId;
-                        }
-                        if (upd["message"].is<JsonObject>()) {
-                            JsonObject msg = upd["message"].as<JsonObject>();
-                            String chatId = String(msg["chat"]["id"].as<int64_t>());
-                            String user = msg["from"]["username"].is<const char*>()
-                                          ? String(msg["from"]["username"].as<const char*>())
-                                          : String(msg["from"]["first_name"] | "User");
-                            String text = String(msg["text"] | "");
-                            if (text.length() == 0) continue;
+                        if (updId > m_lastUpdateId) m_lastUpdateId = updId;
+                    }
+                    m_bootSynced = true;
+                    if (m_lastUpdateId > 0) {
+                        acknowledgeUpdates();
+                    }
+                    DebugLogger::info("TELEGRAM", "Boot sync complete (flushed old queue up to update_id=" + String((long)m_lastUpdateId) + ")");
+                    return;
+                }
+                for (JsonObject upd : arr) {
+                    int64_t updId = upd["update_id"].as<int64_t>();
+                    if (updId > m_lastUpdateId) {
+                        m_lastUpdateId = updId;
+                    }
+                    if (upd["message"].is<JsonObject>()) {
+                        JsonObject msg = upd["message"].as<JsonObject>();
+                        String chatId = String(msg["chat"]["id"].as<int64_t>());
+                        String user = msg["from"]["username"].is<const char*>()
+                                      ? String(msg["from"]["username"].as<const char*>())
+                                      : String(msg["from"]["first_name"] | "User");
+                        String text = String(msg["text"] | "");
+                        if (text.length() == 0) continue;
 
-                            if (!isChatAuthorized(chatId)) {
-                                DebugLogger::warn("TELEGRAM", "⛔ Unauthorized Chat ID " + chatId + " (@" + user + "): " + text);
-                                sendMessage(chatId, "⛔ <b>Доступ заборонено!</b>\nВаш Chat ID: <code>" + chatId + "</code> не внесено у білий список контролера.", false);
-                                continue;
-                            }
-                            handleIncomingCommand(chatId, user, text);
+                        if (!isChatAuthorized(chatId)) {
+                            DebugLogger::warn("TELEGRAM", "⛔ Unauthorized Chat ID " + chatId + " (@" + user + "): " + text);
+                            sendMessage(chatId, "⛔ <b>Доступ заборонено!</b>\nВаш Chat ID: <code>" + chatId + "</code> не внесено у білий список контролера.", false);
+                            continue;
                         }
+                        handleIncomingCommand(chatId, user, text);
                     }
                 }
-            } else if (code == 401 || code == 404) {
-                m_backoffUntilMs = millis() + 60000UL;
-                DebugLogger::warn("TELEGRAM", "Invalid Bot Token (HTTP " + String(code) + ") — pausing Telegram polling for 60s");
-            } else if (code <= 0) {
-                m_backoffUntilMs = millis() + 15000UL;
             }
-            http.end();
-        } else {
+        } else if (code == 401 || code == 404) {
+            m_backoffUntilMs = millis() + 60000UL;
+            DebugLogger::warn("TELEGRAM", "Invalid Bot Token (HTTP " + String(code) + ") — pausing Telegram polling for 60s");
+        } else if (code <= 0) {
             m_backoffUntilMs = millis() + 15000UL;
         }
 
