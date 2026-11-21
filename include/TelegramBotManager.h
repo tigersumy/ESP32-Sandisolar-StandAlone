@@ -371,28 +371,28 @@ private:
 
         DebugLogger::info("TELEGRAM", "Cmd from @" + userName + " (" + chatId + "): " + text);
 
-        if (cmd == "/start" || cmd == "/help" || cmd == "/menu" || cmd == "меню" || cmd == "допомога") {
+        if (cmd == "/start" || cmd == "/help" || cmd == "/menu" || text.indexOf("Меню") >= 0 || text.indexOf("меню") >= 0 || text.indexOf("допомога") >= 0) {
             sendMessage(chatId, buildHelpCard(), true);
-        } else if (cmd == "/status" || cmd == "📊 загальний статус" || cmd == "статус") {
+        } else if (cmd == "/status" || text.indexOf("Загальний статус") >= 0 || text.indexOf("загальний статус") >= 0 || text == "Статус" || text == "статус") {
             sendMessage(chatId, buildStatusCard(), true);
-        } else if (cmd == "/battery" || cmd == "🔋 батарея" || cmd == "акб" || cmd == "акумулятор") {
+        } else if (cmd == "/battery" || text.indexOf("Батарея") >= 0 || text.indexOf("батарея") >= 0 || text == "АКБ" || text == "акб" || text.indexOf("акумулятор") >= 0) {
             sendMessage(chatId, buildBatteryCard(), true);
-        } else if (cmd == "/grid" || cmd == "⚡ мережа" || cmd == "мережа" || cmd == "світло") {
+        } else if (cmd == "/grid" || text.indexOf("Мережа") >= 0 || text.indexOf("мережа") >= 0 || text.indexOf("Світло") >= 0 || text.indexOf("світло") >= 0) {
             sendMessage(chatId, buildGridCard(), true);
-        } else if (cmd == "/solar" || cmd == "☀️ сонце" || cmd == "сонце" || cmd == "панелі") {
+        } else if (cmd == "/solar" || text.indexOf("Сонце") >= 0 || text.indexOf("сонце") >= 0 || text.indexOf("Панелі") >= 0 || text.indexOf("панелі") >= 0) {
             sendMessage(chatId, buildSolarCard(), true);
-        } else if (cmd == "/load" || cmd == "/power" || cmd == "🏠 споживання" || cmd == "споживання") {
+        } else if (cmd == "/load" || cmd == "/power" || text.indexOf("Споживання") >= 0 || text.indexOf("споживання") >= 0) {
             sendMessage(chatId, buildLoadCard(), true);
-        } else if (cmd == "/temps" || cmd == "🌡 температури" || cmd == "температури") {
+        } else if (cmd == "/temps" || text.indexOf("Температури") >= 0 || text.indexOf("температури") >= 0) {
             sendMessage(chatId, buildTempsCard(), true);
-        } else if (cmd == "/auto" || cmd == "/rules" || cmd == "⚙️ автоматика" || cmd == "автоматика") {
+        } else if (cmd == "/auto" || cmd == "/rules" || text.indexOf("Автоматика") >= 0 || text.indexOf("автоматика") >= 0) {
             sendMessage(chatId, buildAutoCard(), true);
-        } else if (cmd == "/on" || cmd == "🟢 softon" || cmd == "softon") {
+        } else if (cmd == "/on" || cmd.indexOf("softon") >= 0) {
             bool ok = m_modbus.setPowerSwitch(true);
             m_engine.addEventLog("tg_cmd_on", String("Команда з Telegram (@") + userName + "): SoftON -> " + (ok ? "OK" : "ERROR"));
             sendMessage(chatId, ok ? "✅ <b>Команду SoftON (reg 0 = 1) успішно виконано!</b>\nІнвертор увімкнено."
                                    : ("❌ <b>Помилка виконання SoftON:</b> " + m_modbus.getTelemetry().last_error), true);
-        } else if (cmd == "/off" || cmd == "🛑 softoff" || cmd == "softoff") {
+        } else if (cmd == "/off" || cmd.indexOf("softoff") >= 0) {
             bool ok = m_modbus.setPowerSwitch(false);
             m_engine.addEventLog("tg_cmd_off", String("Команда з Telegram (@") + userName + "): SoftOFF -> " + (ok ? "OK" : "ERROR"));
             sendMessage(chatId, ok ? "🛑 <b>Команду SoftOFF (reg 0 = 0) успішно виконано!</b>\nІнвертор переведено в режим очікування / байпас."
