@@ -125,6 +125,16 @@ This builds both:
 * `.pio/build/esp32-s3-n16r8/firmware.bin` — application image for wireless **Web OTA** updates.
 
 ### 3. Initial USB Flash (`0x0000`)
+
+#### Option A — Browser Web Flasher (No software installation required, Chrome / Edge)
+1. Open **[https://esptool.spacehuhn.com/](https://esptool.spacehuhn.com/)**.
+2. Connect the ESP32-S3 via USB-C (**COM/UART** port) and click **Connect** → select the serial port (`USB Single Serial` / `CH343` / `CP210x`).
+   * *If it fails to connect:* hold **BOOT**, press & release **RST/RET**, release **BOOT**, and try again.
+3. *(Recommended on used boards)* Click **Erase** to clear old NVS settings.
+4. Set offset address to **`0x0`**, select **`firmware.factory.bin`**, and click **Program**.
+5. After `100%`, **unplug and reconnect USB** (or press **RST/RET**) and wait ~10 seconds for the **`Sandisolar-S3-Setup`** Wi-Fi AP to appear.
+
+#### Option B — PlatformIO / `esptool.py` (CLI)
 ```bash
 pio run -t upload
 ```
