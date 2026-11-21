@@ -76,13 +76,18 @@ private:
     bool sendMessage(const String& chatId, const String& htmlText, bool withKeyboard = true, String* outErr = nullptr) {
         if (m_config.tg_bot_token.length() == 0 || chatId.length() == 0) return false;
         if (WiFi.status() != WL_CONNECTED) return false;
+        if (ESP.getFreeHeap() < 55000) {
+            if (outErr) *outErr = "Low Heap (<55KB), skipped TLS";
+            DebugLogger::warn("TELEGRAM", "Low Heap (" + String(ESP.getFreeHeap() / 1024) + " KB) — skipping sendMessage TLS");
+            return false;
+        }
 
         WiFiClientSecure client;
         client.setInsecure();
-        client.setTimeout(10);
+        client.setTimeout(8);
 
         HTTPClient http;
-        http.setTimeout(10000);
+        http.setTimeout(8000);
         String url = "https://api.telegram.org/bot" + m_config.tg_bot_token + "/sendMessage";
 
         JsonDocument doc;
@@ -105,14 +110,21 @@ private:
             int code = http.POST(payload);
             if (code == 200) {
                 ok = true;
+                m_backoffUntilMs = 0;
             } else {
                 String resp = http.getString();
                 if (outErr) *outErr = "HTTP " + String(code) + ": " + resp;
                 DebugLogger::warn("TELEGRAM", "sendMessage failed HTTP " + String(code));
+                if (code == 401 || code == 404) {
+                    m_backoffUntilMs = millis() + 60000UL;
+                } else if (code <= 0) {
+                    m_backoffUntilMs = millis() + 15000UL;
+                }
             }
             http.end();
         } else {
             if (outErr) *outErr = "HTTPS begin failed";
+            m_backoffUntilMs = millis() + 15000UL;
         }
         return ok;
     }
@@ -503,13 +515,16 @@ private:
     void pollUpdates() {
         if (!m_config.tg_enabled || m_config.tg_bot_token.length() == 0) return;
         if (WiFi.status() != WL_CONNECTED) return;
+        if (ESP.getFreeHeap() < 55000) {
+            return; // Guard against OOM crash during concurrent Web/Tailscale activity
+        }
 
         WiFiClientSecure client;
         client.setInsecure();
-        client.setTimeout(12);
+        client.setTimeout(8);
 
         HTTPClient http;
-        http.setTimeout(12000);
+        http.setTimeout(8000);
 
         // On first poll after boot, flush any pre-boot queued commands (offset=-1)
         // to prevent re-executing stale /reboot or control commands after a restart.
@@ -519,12 +534,13 @@ private:
                   "/getUpdates?offset=-1&limit=1&timeout=0";
         } else {
             url = "https://api.telegram.org/bot" + m_config.tg_bot_token +
-                  "/getUpdates?offset=" + String(m_lastUpdateId + 1) + "&limit=5&timeout=2";
+                  "/getUpdates?offset=" + String(m_lastUpdateId + 1) + "&limit=5&timeout=1";
         }
 
         if (http.begin(client, url)) {
             int code = http.GET();
             if (code == 200) {
+                m_backoffUntilMs = 0;
                 String body = http.getString();
                 JsonDocument doc;
                 DeserializationError err = deserializeJson(doc, body);
@@ -566,8 +582,15 @@ private:
                         }
                     }
                 }
+            } else if (code == 401 || code == 404) {
+                m_backoffUntilMs = millis() + 60000UL;
+                DebugLogger::warn("TELEGRAM", "Invalid Bot Token (HTTP " + String(code) + ") — pausing Telegram polling for 60s");
+            } else if (code <= 0) {
+                m_backoffUntilMs = millis() + 15000UL;
             }
             http.end();
+        } else {
+            m_backoffUntilMs = millis() + 15000UL;
         }
 
         if (m_pendingReboot) {
@@ -579,23 +602,36 @@ private:
     }
 
     void workerLoop() {
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        vTaskDelay(pdMS_TO_TICKS(4000));
         while (true) {
             if (WiFi.status() == WL_CONNECTED && m_config.tg_enabled && m_config.tg_bot_token.length() > 0) {
-                // 1. Flush any outgoing alerts queued by AutomationEngine
-                String outMsg;
-                while (m_engine.popTelegramMessage(outMsg)) {
-                    sendMessage(m_config.tg_chat_id, outMsg, true);
-                    vTaskDelay(pdMS_TO_TICKS(300));
+                // Reset backoff immediately if user updated the token
+                if (m_lastToken != m_config.tg_bot_token) {
+                    m_lastToken = m_config.tg_bot_token;
+                    m_backoffUntilMs = 0;
+                    m_bootSynced = false;
                 }
 
-                // 2. Poll incoming interactive bot commands
-                if (millis() - m_lastPollMs >= 3500) {
-                    m_lastPollMs = millis();
-                    pollUpdates();
+                bool inBackoff = (m_backoffUntilMs != 0 && (int32_t)(millis() - m_backoffUntilMs) < 0);
+                if (!inBackoff) {
+                    // 1. Flush any outgoing alerts queued by AutomationEngine
+                    String outMsg;
+                    while (m_engine.popTelegramMessage(outMsg)) {
+                        if (!sendMessage(m_config.tg_chat_id, outMsg, true)) {
+                            break; // Stop draining on error/backoff to avoid TLS storm
+                        }
+                        vTaskDelay(pdMS_TO_TICKS(300));
+                    }
+
+                    // 2. Poll incoming interactive bot commands (every 7s to keep Core 0 & Heap responsive)
+                    inBackoff = (m_backoffUntilMs != 0 && (int32_t)(millis() - m_backoffUntilMs) < 0);
+                    if (!inBackoff && (millis() - m_lastPollMs >= 7000)) {
+                        m_lastPollMs = millis();
+                        pollUpdates();
+                    }
                 }
             }
-            vTaskDelay(pdMS_TO_TICKS(400));
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
     }
 
@@ -605,6 +641,8 @@ private:
     TaskHandle_t      m_taskHandle = nullptr;
     int64_t           m_lastUpdateId = 0;
     uint32_t          m_lastPollMs = 0;
+    uint32_t          m_backoffUntilMs = 0;
+    String            m_lastToken = "";
     String            m_vpnIp = "";
     bool              m_bootSynced = false;
     bool              m_pendingReboot = false;
